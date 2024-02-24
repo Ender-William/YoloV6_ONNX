@@ -5,31 +5,43 @@ import numpy as np
 import onnxruntime
 
 from .utils.augment import letterbox
-from .utils.nms import nms, xywh2xyxy
-
 
 class YoloORT:
-    def __init__(self, names:list=None, weight:str=None, img_size:tuple=None, 
-                 conf:float=0.2, iou:float=0.1, device:str="cuda") -> None:
-        
-        self.names:list = names
-        rng = np.random.default_rng(3)
-        self.colors = rng.uniform(0, 255, size=(len(self.names), 3))
-        
+    def __init__(self, cls_name:list=None, weight:str=None, img_size:tuple=(640, 640), 
+                 conf:float=0.2, device:str="cuda") -> None:
+        """Init YoloV6 ORT Detect Model
+
+        Args:
+            cls_name (list, optional): class name. Defaults to None.
+            weight (str, optional): model path. Defaults to None.
+            img_size (tuple, optional): model input shape. Defaults to (640, 640).
+            conf (float, optional): conf threshold. Defaults to 0.2.
+            device (str, optional): equipment used for inference. Default to "cuda", support ["cuda", "cpu"].
+        """
+        self.names:list = cls_name
         self.conf_threshold:float = conf
-        self.iou_threshold:float = iou
         self.new_shape:float = img_size
         
-        if device == "cuda":
+        if weight is None:
+            raise ValueError("No models loaded")
+        weight_exists = os.path.exists(weight)
+        if not weight_exists:
+            raise ValueError("Model is not exist")        
+    
+        # init model
+        self.set_ort_provider(device=device)
+        self.model_initialize(model_path=weight)
+    
+    def set_ort_provider(self, device:str):
+        if device == "trt":
+            self.provider = ['TensorrtExecutionProvider']
+        elif device == "cuda":
             self.provider = ['CUDAExecutionProvider']
         elif device == "cpu":
             self.provider = ['CPUExecutionProvider']
         else:
-            print(f"device: {device} is not support, use default providers")
-            self.provider = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-    
-        # init model
-        self.model_initialize(model_path=weight)
+            print(f"device: {device} is not support, use cpu providers")
+            self.provider = ['CPUExecutionProvider']
     
     def model_initialize(self, model_path:str) -> None:
         self.session = onnxruntime.InferenceSession(
@@ -48,18 +60,37 @@ class YoloORT:
         model_outputs = self.session.get_outputs()
         self.output_names = [model_outputs[i].name for i in range(len(model_outputs))]
     
-    def detect(self, image:np.ndarray):
+    def detect(self, image:np.ndarray = None) -> tuple:
+        
+        if image is None: return None
+        
         self.start_time = time.perf_counter()
-        input_tensor, letterbox_image = self.preprocess(image=image)
-        letterbox_image = cv2.cvtColor(letterbox_image, cv2.COLOR_RGB2BGR)
+        
+        input_tensor = self.preprocess(image=image)
         detect_outputs = self.inference(input_tensor=input_tensor)
 
         result = self.process_outputs(outputs=detect_outputs)
         del input_tensor
-        infer_time_usage = time.perf_counter() - self.start_time
-        return result, infer_time_usage  # , letterbox_image, input_tensor
+        del detect_outputs
+        self.infer_time_usage = time.perf_counter() - self.start_time
+        self.frame_per_second = 1 / self.infer_time_usage
+        return result
+    
+    def get_fps(self) -> float:
+        return self.frame_per_second
+    
+    def get_infer_time(self) -> float:
+        return self.infer_time_usage
         
     def preprocess(self, image:np.ndarray):
+        """get letterbox image and tensor image
+
+        Args:
+            image (np.ndarray): bgr image
+
+        Returns:
+            NDArray: tensor image
+        """
         letterbox_image, self.scale, (self.letter_left, self.letter_top) = letterbox(
             im=image,
             new_shape=self.new_shape,
@@ -68,10 +99,11 @@ class YoloORT:
         self.image_height, self.image_width = letterbox_image.shape[:2]
         letterbox_image = cv2.cvtColor(letterbox_image, cv2.COLOR_BGR2RGB)
         input_image = letterbox_image / 255.0
-        # del letterbox_image
+        del letterbox_image
         input_image = input_image.transpose(2, 0, 1)
         input_tensor = input_image[np.newaxis, :, :, :].astype(np.float32) 
-        return input_tensor, letterbox_image
+        del input_image
+        return input_tensor
     
     def inference(self, input_tensor):
         outputs = self.session.run(
