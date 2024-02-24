@@ -9,7 +9,8 @@ from .utils.nms import nms, xywh2xyxy
 
 
 class YoloORT:
-    def __init__(self, names:list=None, weight:str=None, img_size:tuple=None, conf:float=0.2, iou:float=0.1) -> None:
+    def __init__(self, names:list=None, weight:str=None, img_size:tuple=None, 
+                 conf:float=0.2, iou:float=0.1, device:str="cuda") -> None:
         
         self.names:list = names
         rng = np.random.default_rng(3)
@@ -18,6 +19,14 @@ class YoloORT:
         self.conf_threshold:float = conf
         self.iou_threshold:float = iou
         self.new_shape:float = img_size
+        
+        if device == "cuda":
+            self.provider = ['CUDAExecutionProvider']
+        elif device == "cpu":
+            self.provider = ['CPUExecutionProvider']
+        else:
+            print(f"device: {device} is not support, use default providers")
+            self.provider = ['CUDAExecutionProvider', 'CPUExecutionProvider']
     
         # init model
         self.model_initialize(model_path=weight)
@@ -25,7 +34,7 @@ class YoloORT:
     def model_initialize(self, model_path:str) -> None:
         self.session = onnxruntime.InferenceSession(
             model_path,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            providers=self.provider
         )
         
         # get input details
@@ -48,7 +57,7 @@ class YoloORT:
         result = self.process_outputs(outputs=detect_outputs)
         del input_tensor
         infer_time_usage = time.perf_counter() - self.start_time
-        return result  #, letterbox_image, input_tensor
+        return result, infer_time_usage  # , letterbox_image, input_tensor
         
     def preprocess(self, image:np.ndarray):
         letterbox_image, self.scale, (self.letter_left, self.letter_top) = letterbox(
